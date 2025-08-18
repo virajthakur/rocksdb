@@ -410,7 +410,7 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
   // Create ColumnFamilyOptions from Options
   explicit ColumnFamilyOptions(const Options& options);
 
-  // transient CF that will not be included in manifest - GC'd after restart
+  // transient CF that will not be included in manifest or checkpoint
   bool is_transient = false;
 
   void Dump(Logger* log) const;
