@@ -304,6 +304,9 @@ class ColumnFamilyData {
   // thread-safe
   const std::string& GetName() const { return name_; }
 
+  // transient CF implementation
+  // bool IsTransient() const { return initial_cf_options_.is_transient_; }
+
   // Ref() can only be called from a context where the caller can guarantee
   // that ColumnFamilyData is alive (while holding a non-zero ref already,
   // holding a DB mutex, or as the leader in a write batch group).

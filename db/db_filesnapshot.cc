@@ -15,6 +15,7 @@
 #include "db/version_set.h"
 #include "file/file_util.h"
 #include "file/filename.h"
+#include "iostream"
 #include "logging/logging.h"
 #include "port/port.h"
 #include "rocksdb/db.h"
@@ -259,7 +260,9 @@ Status DBImpl::GetLiveFilesStorageInfo(
 
   // Make a set of all of the live table and blob files
   for (auto cfd : *versions_->GetColumnFamilySet()) {
-    if (cfd->IsDropped()) {
+    // check if the column
+    if (cfd->IsDropped() || cfd->initial_cf_options().is_transient) {
+      std::cout << "SKIPPING TRANSIENT CF: " << cfd->GetName() << std::endl;
       continue;
     }
     VersionStorageInfo& vsi = *cfd->current()->storage_info();
