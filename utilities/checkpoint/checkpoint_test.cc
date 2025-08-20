@@ -269,17 +269,13 @@ TEST_F(CheckpointTest, CheckpointTransientCF) {
   Options options = CurrentOptions();
   CreateAndReopenWithCF({"one", "two", "three", "four", "five"}, options);
   options.is_transient = true;
-  CreateColumnFamilies(
-      {"one_temp", "two_temp", "three_temp", "four_temp", "five_temp"},
-      options);
+  CreateColumnFamilies({"six_temp", "seven_temp", "eight_temp"}, options);
 
-  // ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
-  //     {{"CheckpointTest::CheckpointCF:2",
-  //     "DBImpl::FlushAllColumnFamilies:2"},
-  //      {"DBImpl::FlushAllColumnFamilies:1",
-  //      "CheckpointTest::CheckpointCF:1"}});
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
+      {{"CheckpointTest::CheckpointCF:2", "DBImpl::FlushAllColumnFamilies:2"},
+       {"DBImpl::FlushAllColumnFamilies:1", "CheckpointTest::CheckpointCF:1"}});
 
-  // ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
 
   ASSERT_OK(Put(0, "Default", "Default"));
   ASSERT_OK(Put(1, "one", "one"));
@@ -287,6 +283,10 @@ TEST_F(CheckpointTest, CheckpointTransientCF) {
   ASSERT_OK(Put(3, "three", "three"));
   ASSERT_OK(Put(4, "four", "four"));
   ASSERT_OK(Put(5, "five", "five"));
+
+  ASSERT_OK(Put(1, "six_temp", "six_temp"));
+  ASSERT_OK(Put(2, "seven_temp", "seven_temp"));
+  ASSERT_OK(Put(3, "eight_temp", "eight_temp"));
 
   DB* snapshotDB;
   ReadOptions roptions;
@@ -320,7 +320,15 @@ TEST_F(CheckpointTest, CheckpointTransientCF) {
   // Open snapshot and verify contents while DB is running
   options.create_if_missing = false;
   std::vector<std::string> cfs;
-  cfs = {kDefaultColumnFamilyName, "one", "two", "three", "four", "five"};
+  cfs = {kDefaultColumnFamilyName,
+         "one",
+         "two",
+         "three",
+         "four",
+         "five",
+         "six_temp",
+         "seven_temp",
+         "eight_temp"};
   std::vector<ColumnFamilyDescriptor> column_families;
   for (size_t i = 0; i < cfs.size(); ++i) {
     column_families.emplace_back(cfs[i], options);
@@ -332,13 +340,30 @@ TEST_F(CheckpointTest, CheckpointTransientCF) {
   ASSERT_OK(snapshotDB->Get(roptions, cphandles[1], "one", &result));
   ASSERT_EQ("eleven", result);
   ASSERT_OK(snapshotDB->Get(roptions, cphandles[2], "two", &result));
+
+  ASSERT_EQ(snapshotDB->Get(roptions, cphandles[6], "six_temp", &result).code(),
+            Status::kNotFound);
+  ASSERT_OK(db_->Get(roptions, cphandles[6], "six_temp", &result));
+  ASSERT_EQ(result, "six_temp");
+
+  ASSERT_EQ(
+      snapshotDB->Get(roptions, cphandles[7], "seven_temp", &result).code(),
+      Status::kNotFound);
+  ASSERT_OK(db_->Get(roptions, cphandles[7], "seven_temp", &result));
+  ASSERT_EQ(result, "seven_temp");
+
+  ASSERT_EQ(
+      snapshotDB->Get(roptions, cphandles[8], "eight_temp", &result).code(),
+      Status::kNotFound);
+  ASSERT_OK(db_->Get(roptions, cphandles[8], "eight_temp", &result));
+  ASSERT_EQ(result, "eight_temp");
+
   for (auto h : cphandles) {
     delete h;
   }
   cphandles.clear();
   delete snapshotDB;
   snapshotDB = nullptr;
-  ASSERT_TRUE(false);
 }
 
 TEST_F(CheckpointTest, GetSnapshotLink) {
