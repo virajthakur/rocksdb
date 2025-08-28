@@ -1152,7 +1152,9 @@ class VersionSetTestBase {
   const static std::string kColumnFamilyName1;
   const static std::string kColumnFamilyName2;
   const static std::string kColumnFamilyName3;
-  const static int kNumColumnFamilies = 4;
+  const static std::string kTransientColumnFamilyName4;
+  const static int numTransientCfs = 1;
+  const static int kNumColumnFamilies = 5;
   int num_initial_edits_;
 
   explicit VersionSetTestBase(const std::string& name)
@@ -1234,7 +1236,7 @@ class VersionSetTestBase {
 
     const std::vector<std::string> cf_names = {
         kDefaultColumnFamilyName, kColumnFamilyName1, kColumnFamilyName2,
-        kColumnFamilyName3};
+        kColumnFamilyName3, kTransientColumnFamilyName4};
     const int kInitialNumOfCfs = static_cast<int>(cf_names.size());
     autovector<VersionEdit> new_cfs;
     uint64_t last_seq = 1;
@@ -1273,7 +1275,11 @@ class VersionSetTestBase {
 
     cf_options_.table_factory = table_factory_;
     for (const auto& cf_name : cf_names) {
+      if (cf_name == kTransientColumnFamilyName4) {
+        cf_options_.is_transient = true;
+      }
       column_families->emplace_back(cf_name, cf_options_);
+      cf_options_.is_transient = false;
     }
   }
 
@@ -1492,6 +1498,7 @@ class VersionSetTestBase {
 const std::string VersionSetTestBase::kColumnFamilyName1 = "alice";
 const std::string VersionSetTestBase::kColumnFamilyName2 = "bob";
 const std::string VersionSetTestBase::kColumnFamilyName3 = "charles";
+const std::string VersionSetTestBase::kTransientColumnFamilyName4 = "johntemp";
 
 class VersionSetTest : public VersionSetTestBase, public testing::Test {
  public:
@@ -2752,7 +2759,7 @@ TEST_F(VersionSetAtomicGroupTest,
   // Reactive version set should be empty now.
   EXPECT_TRUE(reactive_versions_->TEST_read_edits_in_atomic_group() == 0);
   EXPECT_TRUE(reactive_versions_->replay_buffer().size() == 0);
-  EXPECT_EQ(num_initial_edits_, num_recovered_edits_);
+  EXPECT_EQ(num_initial_edits_ - numTransientCfs, num_recovered_edits_);
 }
 
 TEST_F(VersionSetAtomicGroupTest,
