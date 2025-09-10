@@ -6107,6 +6107,12 @@ Status VersionSet::LogAndApply(
     assert(static_cast<size_t>(num_cfds) == edit_lists.size());
   }
   for (int i = 0; i < num_cfds; ++i) {
+    // TODO VIRAJ: FIX test
+    // ./version_set_test
+    // --gtest_filter=VersionSetWithTimestampTest.SetFullHistoryTsLbOnce
+    if (column_family_datas[i]->GetLatestMutableCFOptions().is_transient) {
+      continue;
+    }
     const auto wcb =
         manifest_wcbs.empty() ? [](const Status&) {} : manifest_wcbs[i];
     writers.emplace_back(mu, column_family_datas[i], edit_lists[i], wcb);
