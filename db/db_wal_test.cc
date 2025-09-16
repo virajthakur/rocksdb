@@ -298,11 +298,17 @@ TEST_F(DBWALTest, Recover) {
     CreateAndReopenWithCF({"pikachu"}, CurrentOptions());
     ASSERT_OK(Put(1, "foo", "v1"));
     ASSERT_OK(Put(1, "baz", "v5"));
+    CreateColumnFamilies({"temp"}, GetTransientCFOptions());
+    // ColumnFamilyHandle* transient_handle;
+    // ASSERT_OK(db_->CreateColumnFamily(GetTransientCFOptions(), "temp", &transient_handle));
+    ASSERT_OK(Put(2, "foo_temp", "v2"));
+    ASSERT_EQ("v2", Get(2, "foo_temp"));
 
-    ReopenWithColumnFamilies({"default", "pikachu"}, CurrentOptions());
+    ReopenWithColumnFamilies({"default", "pikachu", "temp"}, CurrentOptions());
     ASSERT_EQ("v1", Get(1, "foo"));
     ASSERT_EQ("v1", Get(1, "foo"));
     ASSERT_EQ("v5", Get(1, "baz"));
+    ASSERT_EQ("NOT_FOUND", Get(2, "foo_temp"));
     ASSERT_OK(Put(1, "bar", "v2"));
     ASSERT_OK(Put(1, "foo", "v3"));
 
