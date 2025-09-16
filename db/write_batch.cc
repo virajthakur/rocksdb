@@ -37,7 +37,7 @@
 //    data: uint8[len]
 
 #include "rocksdb/write_batch.h"
-
+#include <iostream>
 #include <algorithm>
 #include <cstdint>
 #include <limits>
@@ -2183,6 +2183,7 @@ class MemTableInserter : public WriteBatch::Handler {
     // to clone the original ColumnFamilyMemTables so that each thread
     // has its own instance.  Otherwise, it must be guaranteed that there
     // is no concurrent access
+    std::cout << "SEARCHING FOR COLUMN FAMILY " << column_family_id;
     bool found = cf_mems_->Seek(column_family_id);
     if (!found) {
       if (ignore_missing_column_families_) {

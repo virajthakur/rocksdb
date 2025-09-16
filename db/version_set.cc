@@ -6126,10 +6126,9 @@ Status VersionSet::LogAndApply(
     assert(static_cast<size_t>(num_cfds) == edit_lists.size());
   }
   for (int i = 0; i < num_cfds; ++i) {
-    // TODO VIRAJ: FIX test
-    // ./version_set_test
-    // --gtest_filter=VersionSetWithTimestampTest.SetFullHistoryTsLbOnce
-    if (column_family_datas[i]->GetLatestMutableCFOptions().is_transient) {
+    // Skip transient CFs, but handle CF creation where column_family_data is nullptr
+    if (column_family_datas[i] != nullptr &&
+        column_family_datas[i]->GetLatestMutableCFOptions().is_transient) {
       continue;
     }
     const auto wcb =
@@ -6137,7 +6136,11 @@ Status VersionSet::LogAndApply(
     writers.emplace_back(mu, column_family_datas[i], edit_lists[i], wcb);
     manifest_writers_.push_back(&writers[i]);
   }
-  assert(!writers.empty());
+  // assert(!writers.empty());
+  // all CFDs were transient
+  if (writers.empty()) {
+    return Status::OK();
+  }
   ManifestWriter& first_writer = writers.front();
   TEST_SYNC_POINT_CALLBACK("VersionSet::LogAndApply:BeforeWriterWaiting",
                            nullptr);
