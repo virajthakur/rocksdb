@@ -573,6 +573,34 @@ Status DBImpl::Recover(
   if (!s.ok()) {
     return s;
   }
+
+  // Drop transient CFs upon DB reopen for Option 3 implementation
+  // Read the is_transient flag from the CF options (now properly serialized)
+  if (s.ok() && !read_only) {
+    // std::vector<ColumnFamilyData*> transient_cfds_to_drop;
+
+    // Drop CFs that have is_transient=true in their ImmutableCFOptions
+    for (auto cfd : *versions_->GetColumnFamilySet()) {
+      if (cfd->ioptions().is_transient) {
+        ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                       "Dropping transient column family: %s",
+                       cfd->GetName().c_str());
+        // transient_cfds_to_drop.push_back(cfd);
+        // Mark transient CFs as dropped - they will be cleaned up when
+        // unreferenced
+        cfd->SetDropped();
+      }
+    }
+
+    // Mark transient CFs as dropped - they will be cleaned up when unreferenced
+    // for (auto cfd : transient_cfds_to_drop) {
+    //   cfd->SetDropped();
+    //   ROCKS_LOG_INFO(immutable_db_options_.info_log,
+    //                  "Marked transient column family %s as dropped",
+    //                  cfd->GetName().c_str());
+    // }
+  }
+
   if (s.ok() && !read_only) {
     for (auto cfd : *versions_->GetColumnFamilySet()) {
       const auto& moptions = cfd->GetLatestMutableCFOptions();
