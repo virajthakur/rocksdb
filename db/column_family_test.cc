@@ -799,6 +799,24 @@ TEST_P(ColumnFamilyTest, DropTest) {
   }
 }
 
+TEST_P(ColumnFamilyTest, DropTransientCFUponReopen) {
+  Open();
+  ColumnFamilyOptions cf_opts;
+  ColumnFamilyOptions cf_transient_opts;
+  cf_transient_opts.is_transient = true;
+  // create column family options for transient column families
+  CreateColumnFamilies({"one", "two", "threeTemp"},
+                       {cf_opts, cf_opts, cf_transient_opts});
+
+  ASSERT_OK(Put(0, "foo", "v1"));
+  ASSERT_OK(Put(1, "mirko", "v3"));
+  ASSERT_OK(Put(2, "temp", "temp"));
+  Reopen();
+  ASSERT_EQ(Get(0, "foo"), "v1");
+  ASSERT_EQ(Get(1, "mirko"), "v3");
+  ASSERT_EQ(Get(2, "temp"), "temp");
+}
+
 TEST_P(ColumnFamilyTest, WriteBatchFailure) {
   Open();
   CreateColumnFamiliesAndReopen({"one", "two"});
