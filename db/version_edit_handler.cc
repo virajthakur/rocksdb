@@ -261,7 +261,22 @@ Status VersionEditHandler::OnColumnFamilyAdd(VersionEdit& edit,
         cf_name.compare(kPersistentStatsColumnFamilyName) == 0;
     if (cf_options == name_to_options_.end() &&
         !is_persistent_stats_column_family) {
-      do_not_open_column_families_.emplace(edit.GetColumnFamily(), cf_name);
+      // User didn't request this CF - check if it's transient
+      // Transient CFs are automatically dropped on reopen, so they shouldn't
+      // cause an error if not explicitly requested
+      if (edit.HasTransientColumnFamily() && edit.GetTransientColumnFamily()) {
+        // This is a transient CF - create it with default options and mark as
+        // dropped so it won't cause "not opened" error
+        ColumnFamilyOptions cfo;  // Use default options for transient CF
+        tmp_cfd = CreateCfAndInit(cfo, edit);
+        tmp_cfd->SetDropped();
+        *cfd = tmp_cfd;
+        // Don't add to do_not_open_column_families_ - transient CFs are OK to
+        // skip
+      } else {
+        // Non-transient CF that user didn't request - will cause error later
+        do_not_open_column_families_.emplace(edit.GetColumnFamily(), cf_name);
+      }
     } else {
       if (is_persistent_stats_column_family) {
         ColumnFamilyOptions cfo;
@@ -392,15 +407,29 @@ void VersionEditHandler::CheckIterationResult(const log::Reader& reader,
   }
   // There were some column families in the MANIFEST that weren't specified
   // in the argument. This is OK in read_only mode
+  // Also skip transient CFs since they are automatically dropped on reopen
   if (s->ok() && MustOpenAllColumnFamilies() &&
       !do_not_open_column_families_.empty()) {
     std::string msg;
-    for (const auto& cf : do_not_open_column_families_) {
+    for (const auto& cf_pair : do_not_open_column_families_) {
+      uint32_t cf_id = cf_pair.first;
+      const std::string& cf_name = cf_pair.second;
+
+      // Check if this CF is marked as dropped (transient CFs are dropped)
+      ColumnFamilyData* cfd =
+          version_set_->GetColumnFamilySet()->GetColumnFamily(cf_id);
+      if (cfd != nullptr && cfd->IsDropped()) {
+        // Skip dropped CFs (including transient ones)
+        continue;
+      }
+
       msg.append(", ");
-      msg.append(cf.second);
+      msg.append(cf_name);
     }
-    msg = msg.substr(2);
-    *s = Status::InvalidArgument("Column families not opened: " + msg);
+    if (!msg.empty()) {
+      msg = msg.substr(2);
+      *s = Status::InvalidArgument("Column families not opened: " + msg);
+    }
   }
   if (s->ok()) {
     version_set_->GetColumnFamilySet()->UpdateMaxColumnFamily(

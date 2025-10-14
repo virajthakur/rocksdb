@@ -147,6 +147,11 @@ Status DBImpl::FlushMemTableToOutputFile(
     bool* made_progress, JobContext* job_context, FlushReason flush_reason,
     SuperVersionContext* superversion_context, LogBuffer* log_buffer,
     Env::Priority thread_pri) {
+  fprintf(
+      stderr,
+      "DEBUG FlushMemTableToOutputFile: START for CF '%s', is_transient=%d\n",
+      cfd->GetName().c_str(), cfd->ioptions().is_transient);
+  fflush(stderr);
   mutex_.AssertHeld();
   assert(cfd);
   assert(cfd->imm());
@@ -218,18 +223,30 @@ Status DBImpl::FlushMemTableToOutputFile(
       db_session_id_, cfd->GetFullHistoryTsLow(), &blob_callback_);
   FileMetaData file_meta;
 
+  fprintf(stderr,
+          "DEBUG FlushMemTableToOutputFile: Created FlushJob, "
+          "needs_to_sync_closed_wals=%d\n",
+          needs_to_sync_closed_wals);
+  fflush(stderr);
   Status s;
   bool need_cancel = false;
   IOStatus log_io_s = IOStatus::OK();
   if (needs_to_sync_closed_wals) {
     // SyncClosedWals() may unlock and re-lock the wal_write_mutex multiple
     // times.
+    fprintf(stderr, "DEBUG FlushMemTableToOutputFile: Before SyncClosedWals\n");
+    fflush(stderr);
     VersionEdit synced_wals;
     bool error_recovery_in_prog = error_handler_.IsRecoveryInProgress();
     mutex_.Unlock();
     log_io_s = SyncClosedWals(write_options, job_context, &synced_wals,
                               error_recovery_in_prog);
     mutex_.Lock();
+    fprintf(
+        stderr,
+        "DEBUG FlushMemTableToOutputFile: After SyncClosedWals, status=%s\n",
+        log_io_s.ToString().c_str());
+    fflush(stderr);
     if (log_io_s.ok() && synced_wals.IsWalAddition()) {
       log_io_s = status_to_io_status(
           ApplyWALToManifest(read_options, write_options, &synced_wals));
@@ -267,16 +284,28 @@ Status DBImpl::FlushMemTableToOutputFile(
                      job_context->job_id, s.ToString().c_str());
   }
 
+  fprintf(stderr,
+          "DEBUG FlushMemTableToOutputFile: Before PickMemTable, status=%s\n",
+          s.ToString().c_str());
+  fflush(stderr);
   if (s.ok()) {
     flush_job.PickMemTable();
     need_cancel = true;
   }
+  fprintf(stderr, "DEBUG FlushMemTableToOutputFile: After PickMemTable\n");
+  fflush(stderr);
   TEST_SYNC_POINT_CALLBACK(
       "DBImpl::FlushMemTableToOutputFile:AfterPickMemtables", &flush_job);
 
   // may temporarily unlock and lock the mutex.
+  fprintf(stderr,
+          "DEBUG FlushMemTableToOutputFile: Before NotifyOnFlushBegin\n");
+  fflush(stderr);
   NotifyOnFlushBegin(cfd, &file_meta, mutable_cf_options, job_context->job_id,
                      flush_reason);
+  fprintf(stderr,
+          "DEBUG FlushMemTableToOutputFile: After NotifyOnFlushBegin\n");
+  fflush(stderr);
 
   bool switched_to_mempurge = false;
   // Within flush_job.Run, rocksdb may call event listener to notify
@@ -285,12 +314,18 @@ Status DBImpl::FlushMemTableToOutputFile(
   // Note that flush_job.Run will unlock and lock the db_mutex,
   // and EventListener callback will be called when the db_mutex
   // is unlocked by the current thread.
+  fprintf(stderr, "DEBUG FlushMemTableToOutputFile: Before flush_job.Run\n");
+  fflush(stderr);
   if (s.ok()) {
     s = flush_job.Run(&logs_with_prep_tracker_, &file_meta,
                       &switched_to_mempurge, &skip_set_bg_error,
                       &error_handler_);
     need_cancel = false;
   }
+  fprintf(stderr,
+          "DEBUG FlushMemTableToOutputFile: After flush_job.Run, status=%s\n",
+          s.ToString().c_str());
+  fflush(stderr);
 
   if (!s.ok() && need_cancel) {
     flush_job.Cancel();
@@ -388,6 +423,10 @@ Status DBImpl::FlushMemTableToOutputFile(
 Status DBImpl::FlushMemTablesToOutputFiles(
     const autovector<BGFlushArg>& bg_flush_args, bool* made_progress,
     JobContext* job_context, LogBuffer* log_buffer, Env::Priority thread_pri) {
+  fprintf(stderr,
+          "DEBUG FlushMemTablesToOutputFiles: CALLED, atomic_flush=%d\n",
+          immutable_db_options_.atomic_flush);
+  fflush(stderr);
   if (immutable_db_options_.atomic_flush) {
     return AtomicFlushMemTablesToOutputFiles(
         bg_flush_args, made_progress, job_context, log_buffer, thread_pri);
@@ -397,15 +436,27 @@ Status DBImpl::FlushMemTablesToOutputFiles(
 
   const auto& bg_flush_arg = bg_flush_args[0];
   ColumnFamilyData* cfd = bg_flush_arg.cfd_;
+  fprintf(stderr,
+          "DEBUG FlushMemTablesToOutputFiles: About to flush CF '%s', "
+          "is_transient=%d\n",
+          cfd->GetName().c_str(), cfd->ioptions().is_transient);
+  fflush(stderr);
   // intentional infrequent copy for each flush
   const MutableCFOptions mutable_cf_options_copy =
       cfd->GetLatestMutableCFOptions();
   SuperVersionContext* superversion_context =
       bg_flush_arg.superversion_context_;
   FlushReason flush_reason = bg_flush_arg.flush_reason_;
+  fprintf(
+      stderr,
+      "DEBUG FlushMemTablesToOutputFiles: Calling FlushMemTableToOutputFile\n");
+  fflush(stderr);
   Status s = FlushMemTableToOutputFile(
       cfd, mutable_cf_options_copy, made_progress, job_context, flush_reason,
       superversion_context, log_buffer, thread_pri);
+  fprintf(stderr, "DEBUG FlushMemTablesToOutputFiles: Returned, status=%s\n",
+          s.ToString().c_str());
+  fflush(stderr);
   return s;
 }
 
@@ -2377,6 +2428,12 @@ Status DBImpl::FlushMemTable(ColumnFamilyData* cfd,
         }
       }
       MaybeScheduleFlushOrCompaction();
+      fprintf(
+          stderr,
+          "DEBUG FlushMemTable: After MaybeSchedule, unscheduled_flushes_=%d, "
+          "flush_queue_size=%zu, bg_flush_scheduled_=%d\n",
+          unscheduled_flushes_, flush_queue_.size(), bg_flush_scheduled_);
+      fflush(stderr);
     }
 
     if (needs_to_join_write_thread) {
@@ -3032,11 +3089,22 @@ bool DBImpl::EnqueuePendingFlush(const FlushRequest& flush_req) {
     assert(cfd);
 
     if (!cfd->queued_for_flush() && cfd->imm()->IsFlushPending()) {
+      fprintf(stderr,
+              "DEBUG EnqueuePendingFlush: ENQUEUED CF '%s', is_transient=%d\n",
+              cfd->GetName().c_str(), cfd->ioptions().is_transient);
+      fflush(stderr);
       cfd->Ref();
       cfd->set_queued_for_flush(true);
       ++unscheduled_flushes_;
       flush_queue_.push_back(flush_req);
       enqueued = true;
+    } else {
+      fprintf(stderr,
+              "DEBUG EnqueuePendingFlush: SKIPPED CF '%s', is_transient=%d, "
+              "already_queued=%d, flush_pending=%d\n",
+              cfd->GetName().c_str(), cfd->ioptions().is_transient,
+              cfd->queued_for_flush(), cfd->imm()->IsFlushPending());
+      fflush(stderr);
     }
   } else {
     for (auto& iter : flush_req.cfd_to_max_mem_id_to_persist) {
@@ -3159,6 +3227,9 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
                                bool* flush_rescheduled_to_retain_udt,
                                Env::Priority thread_pri) {
   mutex_.AssertHeld();
+  fprintf(stderr, "DEBUG BackgroundFlush: CALLED, flush_queue_size=%zu\n",
+          flush_queue_.size());
+  fflush(stderr);
 
   Status status;
   *reason = FlushReason::kOthers;
@@ -3246,6 +3317,12 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
 
       if (cfd->IsDropped() || !cfd->imm()->IsFlushPending()) {
         // can't flush this CF, try next one
+        fprintf(stderr,
+                "DEBUG BackgroundFlush: Skipping CF '%s', is_dropped=%d, "
+                "is_transient=%d, flush_pending=%d\n",
+                cfd->GetName().c_str(), cfd->IsDropped(),
+                cfd->ioptions().is_transient, cfd->imm()->IsFlushPending());
+        fflush(stderr);
         column_families_not_to_flush.push_back(cfd);
         continue;
       }
@@ -3258,11 +3335,22 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
     // `unscheduled_flushes_`. So it's sufficient to make each `BackgroundFlush`
     // handle one `FlushRequest` and each have a Status returned.
     if (!bg_flush_args.empty() || !column_families_not_to_flush.empty()) {
+      fprintf(stderr,
+              "DEBUG BackgroundFlush: Breaking from loop, "
+              "bg_flush_args.size=%zu, column_families_not_to_flush.size=%zu\n",
+              bg_flush_args.size(), column_families_not_to_flush.size());
+      fflush(stderr);
       TEST_SYNC_POINT_CALLBACK("DBImpl::BackgroundFlush:CheckFlushRequest:cb",
                                const_cast<int*>(&flush_req.reschedule_count));
       break;
     }
   }
+
+  fprintf(
+      stderr,
+      "DEBUG BackgroundFlush: After loop, bg_flush_args.size=%zu, status=%s\n",
+      bg_flush_args.size(), status.ToString().c_str());
+  fflush(stderr);
 
   if (!bg_flush_args.empty()) {
     auto bg_job_limits = GetBGJobLimits();
@@ -3278,8 +3366,18 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
           bg_job_limits.max_compactions, bg_flush_scheduled_,
           bg_compaction_scheduled_);
     }
+    fprintf(stderr,
+            "DEBUG BackgroundFlush: About to call FlushMemTablesToOutputFiles "
+            "for CF '%s'\n",
+            bg_flush_args[0].cfd_->GetName().c_str());
+    fflush(stderr);
     status = FlushMemTablesToOutputFiles(bg_flush_args, made_progress,
                                          job_context, log_buffer, thread_pri);
+    fprintf(stderr,
+            "DEBUG BackgroundFlush: Returned from FlushMemTablesToOutputFiles, "
+            "status=%s\n",
+            status.ToString().c_str());
+    fflush(stderr);
     TEST_SYNC_POINT("DBImpl::BackgroundFlush:BeforeFlush");
 // All the CFD/bg_flush_arg in the FlushReq must have the same flush reason, so
 // just grab the first one

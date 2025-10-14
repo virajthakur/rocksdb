@@ -1179,6 +1179,194 @@ TEST_P(CheckpointDestroyTest, DisableEnableSlowDeletion) {
 INSTANTIATE_TEST_CASE_P(CheckpointDestroyTest, CheckpointDestroyTest,
                         ::testing::Values(true, false));
 
+// Test that transient CFs are correctly handled during checkpoint restore:
+// - WAL contains writes to transient CFs
+// - Transient CF is automatically dropped on reopen
+// - WAL recovery should skip writes to dropped transient CFs
+TEST_F(CheckpointTest, CheckpointWithTransientCF) {
+  Options options = CurrentOptions();
+  CreateAndReopenWithCF({"normal_cf"}, options);
+  // ASSERT_OK(db_->CreateColumnFamily(options, "normal_cf", &handles_[1]));
+
+  // Create a transient CF
+  ColumnFamilyOptions cf_options;
+  cf_options.is_transient = true;
+  ColumnFamilyHandle* transient_handle = nullptr;
+  ASSERT_OK(
+      db_->CreateColumnFamily(cf_options, "transient_cf", &transient_handle));
+
+  // Write data to default CF, normal CF, and transient CF
+  ASSERT_OK(Put("key_default", "value_default"));
+  ASSERT_OK(Put(1, "key_normal", "value_normal"));
+  ASSERT_OK(db_->Put(WriteOptions(), transient_handle, "key_transient",
+                     "value_transient"));
+
+  // Flush to ensure data is in memtable and WAL
+  ASSERT_OK(db_->Flush(FlushOptions(), handles_[0]));
+  ASSERT_OK(db_->Flush(FlushOptions(), handles_[1]));
+  // Before: ASSERT_OK(db_->Flush(FlushOptions(), transient_handle));
+  auto cfd_impl = static_cast<ColumnFamilyHandleImpl*>(transient_handle);
+  fprintf(
+      stderr,
+      "DEBUG Test: About to flush CF '%s', is_dropped=%d, is_transient=%d\n",
+      cfd_impl->cfd()->GetName().c_str(), cfd_impl->cfd()->IsDropped(),
+      cfd_impl->cfd()->ioptions().is_transient);
+  // ASSERT_OK(db_->Flush(FlushOptions(), transient_handle));
+  ASSERT_OK(db_->Flush(FlushOptions(), transient_handle));
+
+  // Write more data to WAL (this will be in WAL only)
+  ASSERT_OK(Put("key_default2", "value_default2"));
+  ASSERT_OK(Put(1, "key_normal2", "value_normal2"));
+  ASSERT_OK(db_->Put(WriteOptions(), transient_handle, "key_transient2",
+                     "value_transient2"));
+
+  // ASSERT_TRUE(false);
+
+  // Verify data is accessible
+  ASSERT_EQ("value_default", Get("key_default"));
+  ASSERT_EQ("value_default2", Get("key_default2"));
+  ASSERT_EQ("value_normal", Get(1, "key_normal"));
+  ASSERT_EQ("value_normal2", Get(1, "key_normal2"));
+
+  std::string value;
+  ASSERT_OK(db_->Get(ReadOptions(), transient_handle, "key_transient", &value));
+  ASSERT_EQ("value_transient", value);
+  ASSERT_OK(
+      db_->Get(ReadOptions(), transient_handle, "key_transient2", &value));
+  ASSERT_EQ("value_transient2", value);
+
+  // Create checkpoint
+  Checkpoint* checkpoint = nullptr;
+  ASSERT_OK(Checkpoint::Create(db_, &checkpoint));
+  ASSERT_OK(checkpoint->CreateCheckpoint(snapshot_name_));
+  delete checkpoint;
+
+  // Close DB
+  ASSERT_OK(db_->DestroyColumnFamilyHandle(transient_handle));
+  transient_handle = nullptr;
+  Close();
+
+  // Reopen from checkpoint - only request default and normal CF
+  // (not requesting transient CF, it should be automatically dropped)
+  std::vector<ColumnFamilyDescriptor> cf_descs;
+  cf_descs.emplace_back(kDefaultColumnFamilyName, options);
+  cf_descs.emplace_back("normal_cf", options);
+
+  std::vector<ColumnFamilyHandle*> checkpoint_handles;
+  DB* checkpoint_db = nullptr;
+  Status s = DB::Open(options, snapshot_name_, cf_descs, &checkpoint_handles,
+                      &checkpoint_db);
+  ASSERT_OK(s);
+  ASSERT_NE(checkpoint_db, nullptr);
+
+  // Verify only 2 CFs exist (default + normal, transient was dropped)
+  ASSERT_EQ(2, checkpoint_handles.size());
+
+  // Verify data from default CF
+  std::string checkpoint_value;
+  ASSERT_OK(checkpoint_db->Get(ReadOptions(), checkpoint_handles[0],
+                               "key_default", &checkpoint_value));
+  ASSERT_EQ("value_default", checkpoint_value);
+  ASSERT_OK(checkpoint_db->Get(ReadOptions(), checkpoint_handles[0],
+                               "key_default2", &checkpoint_value));
+  ASSERT_EQ("value_default2", checkpoint_value);
+
+  // Verify data from normal CF
+  ASSERT_OK(checkpoint_db->Get(ReadOptions(), checkpoint_handles[1],
+                               "key_normal", &checkpoint_value));
+  ASSERT_EQ("value_normal", checkpoint_value);
+  ASSERT_OK(checkpoint_db->Get(ReadOptions(), checkpoint_handles[1],
+                               "key_normal2", &checkpoint_value));
+  ASSERT_EQ("value_normal2", checkpoint_value);
+
+  // Clean up
+  for (auto* handle : checkpoint_handles) {
+    ASSERT_OK(checkpoint_db->DestroyColumnFamilyHandle(handle));
+  }
+  delete checkpoint_db;
+
+  // Verify WAL recovery didn't fail due to transient CF writes
+  // by successfully reopening the checkpoint again
+  std::vector<ColumnFamilyHandle*> checkpoint_handles2;
+  DB* checkpoint_db2 = nullptr;
+  s = DB::Open(options, snapshot_name_, cf_descs, &checkpoint_handles2,
+               &checkpoint_db2);
+  ASSERT_OK(s);
+  ASSERT_NE(checkpoint_db2, nullptr);
+
+  for (auto* handle : checkpoint_handles2) {
+    ASSERT_OK(checkpoint_db2->DestroyColumnFamilyHandle(handle));
+  }
+  delete checkpoint_db2;
+}
+
+// Test that sequence numbers remain consistent when transient CF writes
+// are skipped during WAL recovery
+TEST_F(CheckpointTest, CheckpointTransientCFSequenceNumberConsistency) {
+  Options options = CurrentOptions();
+  CreateAndReopenWithCF({"normal_cf"}, options);
+
+  // Create transient CF
+  ColumnFamilyOptions cf_options;
+  cf_options.is_transient = true;
+  ColumnFamilyHandle* transient_handle = nullptr;
+  ASSERT_OK(
+      db_->CreateColumnFamily(cf_options, "transient_cf", &transient_handle));
+
+  // Write interleaved data: normal → transient → normal
+  // This tests that skipping transient writes doesn't break sequence numbers
+  ASSERT_OK(Put(1, "key1", "value1"));  // seq 1
+  ASSERT_OK(db_->Put(WriteOptions(), transient_handle, "key_t1",
+                     "value_t1"));      // seq 2 (will be skipped)
+  ASSERT_OK(Put(1, "key2", "value2"));  // seq 3
+  ASSERT_OK(db_->Put(WriteOptions(), transient_handle, "key_t2",
+                     "value_t2"));      // seq 4 (will be skipped)
+  ASSERT_OK(Put(1, "key3", "value3"));  // seq 5
+
+  // Create checkpoint
+  Checkpoint* checkpoint = nullptr;
+  ASSERT_OK(Checkpoint::Create(db_, &checkpoint));
+  ASSERT_OK(checkpoint->CreateCheckpoint(snapshot_name_));
+  delete checkpoint;
+
+  ASSERT_OK(db_->DestroyColumnFamilyHandle(transient_handle));
+  Close();
+
+  // Reopen from checkpoint
+  std::vector<ColumnFamilyDescriptor> cf_descs;
+  cf_descs.emplace_back(kDefaultColumnFamilyName, options);
+  cf_descs.emplace_back("normal_cf", options);
+
+  std::vector<ColumnFamilyHandle*> checkpoint_handles;
+  DB* checkpoint_db = nullptr;
+  ASSERT_OK(DB::Open(options, snapshot_name_, cf_descs, &checkpoint_handles,
+                     &checkpoint_db));
+
+  // Verify all normal CF data is intact
+  std::string value;
+  ASSERT_OK(
+      checkpoint_db->Get(ReadOptions(), checkpoint_handles[1], "key1", &value));
+  ASSERT_EQ("value1", value);
+  ASSERT_OK(
+      checkpoint_db->Get(ReadOptions(), checkpoint_handles[1], "key2", &value));
+  ASSERT_EQ("value2", value);
+  ASSERT_OK(
+      checkpoint_db->Get(ReadOptions(), checkpoint_handles[1], "key3", &value));
+  ASSERT_EQ("value3", value);
+
+  // Write new data and verify it works (sequence numbers should be correct)
+  ASSERT_OK(checkpoint_db->Put(WriteOptions(), checkpoint_handles[1], "key4",
+                               "value4"));
+  ASSERT_OK(
+      checkpoint_db->Get(ReadOptions(), checkpoint_handles[1], "key4", &value));
+  ASSERT_EQ("value4", value);
+
+  for (auto* handle : checkpoint_handles) {
+    ASSERT_OK(checkpoint_db->DestroyColumnFamilyHandle(handle));
+  }
+  delete checkpoint_db;
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

@@ -1499,6 +1499,7 @@ const std::string VersionSetTestBase::kColumnFamilyName1 = "alice";
 const std::string VersionSetTestBase::kColumnFamilyName2 = "bob";
 const std::string VersionSetTestBase::kColumnFamilyName3 = "charles";
 const std::string VersionSetTestBase::kTransientColumnFamilyName4 = "johntemp";
+const int VersionSetTestBase::kNumColumnFamilies;
 
 class VersionSetTest : public VersionSetTestBase, public testing::Test {
  public:
@@ -1784,6 +1785,40 @@ TEST_F(VersionSetTest, ObsoleteBlobFile) {
 
     ASSERT_TRUE(blob_files.empty());
   }
+}
+
+TEST_F(VersionSetTest, TransientColumnFamily) {
+  NewDB();
+
+  // Verify that the transient column family is included in the VersionSet
+  auto* cf_set = versions_->GetColumnFamilySet();
+  ASSERT_NE(nullptr, cf_set);
+
+  // Check that the transient CF exists in the column family set
+  ColumnFamilyData* found_cfd =
+      cf_set->GetColumnFamily(kTransientColumnFamilyName4);
+  ASSERT_NE(nullptr, found_cfd);
+  ASSERT_TRUE(found_cfd->ioptions().is_transient);
+
+  // Count the total number of column families - should include default +
+  // transient CF
+  int cf_count = 0;
+  for (auto* cfd : *cf_set) {
+    (void)cfd;  // Suppress unused variable warning
+    cf_count++;
+  }
+  ASSERT_EQ(kNumColumnFamilies, cf_count);  // default + transient CF
+
+  // Verify that we can iterate over the VersionSet and find our transient CF
+  bool found_transient = false;
+  for (auto* cfd : *cf_set) {
+    if (cfd->GetName() == kTransientColumnFamilyName4) {
+      found_transient = true;
+      ASSERT_TRUE(cfd->ioptions().is_transient);
+      break;
+    }
+  }
+  ASSERT_TRUE(found_transient);
 }
 
 TEST_F(VersionSetTest, WalEditsNotAppliedToVersion) {

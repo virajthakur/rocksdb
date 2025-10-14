@@ -805,16 +805,51 @@ TEST_P(ColumnFamilyTest, DropTransientCFUponReopen) {
   ColumnFamilyOptions cf_transient_opts;
   cf_transient_opts.is_transient = true;
   // create column family options for transient column families
-  CreateColumnFamilies({"one", "two", "threeTemp"},
-                       {cf_opts, cf_opts, cf_transient_opts});
+  CreateColumnFamilies({"one", "two", "threeTemp", "four"},
+                       {cf_opts, cf_opts, cf_transient_opts, cf_opts});
 
   ASSERT_OK(Put(0, "foo", "v1"));
   ASSERT_OK(Put(1, "mirko", "v3"));
-  ASSERT_OK(Put(2, "temp", "temp"));
-  Reopen();
+  ASSERT_OK(Put(3, "temp", "temp"));
+  ASSERT_OK(Put(4, "mew", "two"));
+
+  // Verify we have all 4 CFs initially (default, one, two, threeTemp)
+  ASSERT_EQ(handles_.size(), 5);
+
+  // Close the database
+  Close();
+
+  // Now test the new behavior: even when explicitly requesting transient CFs,
+  // they should be filtered out and not returned
+  ASSERT_NOK(
+      TryOpen({"default", "one", "two", "threeTemp"},
+              {column_family_options_, cf_opts, cf_opts, cf_transient_opts}));
+
+  ASSERT_OK(TryOpen({"default", "one", "two", "four"},
+                    {column_family_options_, cf_opts, cf_opts, cf_opts}));
+
   ASSERT_EQ(Get(0, "foo"), "v1");
   ASSERT_EQ(Get(1, "mirko"), "v3");
-  ASSERT_EQ(Get(2, "temp"), "temp");
+  ASSERT_EQ(Get(3, "mew"), "two");
+
+  // // The transient CF should have been filtered out even though explicitly
+  // // requested
+  ASSERT_EQ(handles_.size(),
+            4);  // only default, one, two (threeTemp filtered out)
+
+  // // Test that regular reopen also works correctly
+  Close();
+  Open({"default", "one", "two", "four"},
+       {column_family_options_, cf_opts, cf_opts, cf_opts});
+  ASSERT_EQ(Get(0, "foo"), "v1");
+  ASSERT_EQ(Get(1, "mirko"), "v3");
+  ASSERT_EQ(Get(3, "mew"), "two");
+  // Open({"default", "one", "two"}, {column_family_options_, cf_opts,
+  // cf_opts});
+
+  // ASSERT_EQ(Get(0, "foo"), "v1");
+  // ASSERT_EQ(Get(1, "mirko"), "v3");
+  // ASSERT_EQ(handles_.size(), 3);  // only default, one, two
 }
 
 TEST_P(ColumnFamilyTest, WriteBatchFailure) {

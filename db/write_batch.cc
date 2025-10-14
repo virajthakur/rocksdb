@@ -37,9 +37,10 @@
 //    data: uint8[len]
 
 #include "rocksdb/write_batch.h"
-#include <iostream>
+
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <stack>
@@ -2183,7 +2184,7 @@ class MemTableInserter : public WriteBatch::Handler {
     // to clone the original ColumnFamilyMemTables so that each thread
     // has its own instance.  Otherwise, it must be guaranteed that there
     // is no concurrent access
-    std::cout << "SEARCHING FOR COLUMN FAMILY " << column_family_id;
+    // std::cout << "SEARCHING FOR COLUMN FAMILY " << column_family_id;
     bool found = cf_mems_->Seek(column_family_id);
     if (!found) {
       if (ignore_missing_column_families_) {
@@ -2195,6 +2196,17 @@ class MemTableInserter : public WriteBatch::Handler {
       return false;
     }
     auto* current = cf_mems_->current();
+
+    // During WAL recovery, silently ignore writes to transient CFs that have
+    // been dropped. Transient CFs are automatically dropped on DB reopen, but
+    // the WAL may still contain writes to them. We need to skip these writes
+    // to ensure successful recovery from checkpoints/backups.
+    if (recovering_log_number_ != 0 && current &&
+        current->ioptions().is_transient && current->IsDropped()) {
+      *s = Status::OK();
+      return false;
+    }
+
     if (current && current->ioptions().disallow_memtable_writes) {
       *s = Status::InvalidArgument(
           "This column family has disallow_memtable_writes=true");

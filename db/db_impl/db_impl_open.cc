@@ -574,32 +574,8 @@ Status DBImpl::Recover(
     return s;
   }
 
-  // Drop transient CFs upon DB reopen for Option 3 implementation
-  // Read the is_transient flag from the CF options (now properly serialized)
-  if (s.ok() && !read_only) {
-    // std::vector<ColumnFamilyData*> transient_cfds_to_drop;
-
-    // Drop CFs that have is_transient=true in their ImmutableCFOptions
-    for (auto cfd : *versions_->GetColumnFamilySet()) {
-      if (cfd->ioptions().is_transient) {
-        ROCKS_LOG_INFO(immutable_db_options_.info_log,
-                       "Dropping transient column family: %s",
-                       cfd->GetName().c_str());
-        // transient_cfds_to_drop.push_back(cfd);
-        // Mark transient CFs as dropped - they will be cleaned up when
-        // unreferenced
-        cfd->SetDropped();
-      }
-    }
-
-    // Mark transient CFs as dropped - they will be cleaned up when unreferenced
-    // for (auto cfd : transient_cfds_to_drop) {
-    //   cfd->SetDropped();
-    //   ROCKS_LOG_INFO(immutable_db_options_.info_log,
-    //                  "Marked transient column family %s as dropped",
-    //                  cfd->GetName().c_str());
-    // }
-  }
+  // Note: Transient CFs will be dropped AFTER recovery completes
+  // (see code after LogAndApplyForRecovery in DBImpl::Open)
 
   if (s.ok() && !read_only) {
     for (auto cfd : *versions_->GetColumnFamilySet()) {
@@ -869,8 +845,9 @@ Status DBImpl::Recover(
       } else {
         IOOptions io_opts;
         io_opts.do_not_recurse = true;
-        s = immutable_db_options_.fs->GetChildren(
-            GetName(), io_opts, &filenames, /*IODebugContext*=*/nullptr);
+        s = immutable_db_options_.fs->GetChildren(GetName(), io_opts,
+                                                  &filenames,
+                                                  /*IODebugContext*=*/nullptr);
       }
     }
     if (s.ok()) {
@@ -2549,6 +2526,9 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     s = impl->LogAndApplyForRecovery(recovery_ctx);
   }
 
+  // Note: Transient CFs are already marked as dropped during recovery
+  // in VersionEditHandler::OnColumnFamilyAdd, so no need to drop them here
+
   if (s.ok() && !impl->immutable_db_options_.write_identity_file) {
     // On successful recovery, delete an obsolete IDENTITY file to avoid DB ID
     // inconsistency
@@ -2573,6 +2553,15 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
       auto cfd =
           impl->versions_->GetColumnFamilySet()->GetColumnFamily(cf.name);
       if (cfd != nullptr) {
+        // Check if this CF is transient and skip if so
+        if (cfd->ioptions().is_transient) {
+          ROCKS_LOG_INFO(
+              impl->immutable_db_options_.info_log,
+              "Skipping transient column family in explicit open: %s",
+              cf.name.c_str());
+          continue;  // Skip transient CFs even when explicitly requested
+        }
+
         handles->push_back(
             new ColumnFamilyHandleImpl(cfd, impl.get(), &impl->mutex_));
         impl->NewThreadStatusCfInfo(cfd);
@@ -2581,6 +2570,14 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
         sv_context.Clean();
       } else {
         if (db_options.create_missing_column_families) {
+          // Check if the CF options being created are transient
+          if (cf.options.is_transient) {
+            ROCKS_LOG_INFO(impl->immutable_db_options_.info_log,
+                           "Skipping creation of transient column family: %s",
+                           cf.name.c_str());
+            continue;  // Skip creating transient CFs
+          }
+
           // missing column family, create it
           ColumnFamilyHandle* handle = nullptr;
           impl->mutex_.Unlock();

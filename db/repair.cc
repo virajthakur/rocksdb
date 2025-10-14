@@ -161,6 +161,7 @@ class Repairer {
     VersionEdit edit;
     edit.SetComparatorName(opts.comparator->Name());
     edit.SetPersistUserDefinedTimestamps(opts.persist_user_defined_timestamps);
+    edit.SetTransientColumnFamily(cf_opts->is_transient);
     edit.SetLogNumber(0);
     edit.SetColumnFamily(cf_id);
     ColumnFamilyData* cfd;
