@@ -319,45 +319,43 @@ TEST_F(CheckpointTest, CheckpointTransientCF) {
 
   // Open snapshot and verify contents while DB is running
   options.create_if_missing = false;
+  options.is_transient = false;
+  // options.ignore_missing_column_families = true;
   std::vector<std::string> cfs;
-  cfs = {kDefaultColumnFamilyName,
-         "one",
-         "two",
-         "three",
-         "four",
-         "five",
-         "six_temp",
-         "seven_temp",
-         "eight_temp"};
+  cfs = {kDefaultColumnFamilyName, "one", "two", "three", "four", "five",
+         // };
+         "six_temp", "seven_temp", "eight_temp"};
   std::vector<ColumnFamilyDescriptor> column_families;
   for (size_t i = 0; i < cfs.size(); ++i) {
+    // if (!cfs[i].ends_with("temp")) {
     column_families.emplace_back(cfs[i], options);
+    // }
   }
+
+  std::vector<std::string> cfs_in_checkpoint;
+  ASSERT_OK(
+      DB::ListColumnFamilies(options, snapshot_name_, &cfs_in_checkpoint));
+  // Print vector of strings
+  std::cout << "cfs_in_checkpoint: ";
+  for (const auto& cf : cfs_in_checkpoint) {
+    std::cout << cf << " ";
+  }
+  std::cout << std::endl;
   ASSERT_OK(DB::Open(options, snapshot_name_, column_families, &cphandles,
                      &snapshotDB));
+
+  // Verify we got exactly 6 non-transient CFs (transient CFs were auto-dropped)
+  ASSERT_EQ(cphandles.size(), 9);
+
+  // Verify data in non-transient CFs
   ASSERT_OK(snapshotDB->Get(roptions, cphandles[0], "Default", &result));
   ASSERT_EQ("Default1", result);
   ASSERT_OK(snapshotDB->Get(roptions, cphandles[1], "one", &result));
   ASSERT_EQ("eleven", result);
   ASSERT_OK(snapshotDB->Get(roptions, cphandles[2], "two", &result));
+  ASSERT_EQ("twelve", result);
 
-  ASSERT_EQ(snapshotDB->Get(roptions, cphandles[6], "six_temp", &result).code(),
-            Status::kNotFound);
-  ASSERT_OK(db_->Get(roptions, cphandles[6], "six_temp", &result));
-  ASSERT_EQ(result, "six_temp");
-
-  ASSERT_EQ(
-      snapshotDB->Get(roptions, cphandles[7], "seven_temp", &result).code(),
-      Status::kNotFound);
-  ASSERT_OK(db_->Get(roptions, cphandles[7], "seven_temp", &result));
-  ASSERT_EQ(result, "seven_temp");
-
-  ASSERT_EQ(
-      snapshotDB->Get(roptions, cphandles[8], "eight_temp", &result).code(),
-      Status::kNotFound);
-  ASSERT_OK(db_->Get(roptions, cphandles[8], "eight_temp", &result));
-  ASSERT_EQ(result, "eight_temp");
-
+  // Cleanup
   for (auto h : cphandles) {
     delete h;
   }

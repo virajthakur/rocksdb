@@ -2526,8 +2526,32 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     s = impl->LogAndApplyForRecovery(recovery_ctx);
   }
 
-  // Note: Transient CFs are already marked as dropped during recovery
-  // in VersionEditHandler::OnColumnFamilyAdd, so no need to drop them here
+  // Note: Actively drop the transient cfs here:
+  if (s.ok()) {
+    // Drop all transient column families after recovery
+    std::vector<ColumnFamilyData*> transient_cfds;
+    for (auto cfd : *impl->versions_->GetColumnFamilySet()) {
+      if (cfd->ioptions().is_transient) {
+        transient_cfds.push_back(cfd);
+      }
+    }
+
+    for (auto cfd : transient_cfds) {
+      ROCKS_LOG_INFO(impl->immutable_db_options_.info_log,
+                     "Dropping transient column family upon reopen: %s",
+                     cfd->GetName().c_str());
+      // Fix: Convert ColumnFamilyData* to ColumnFamilyHandle* for
+      // DropColumnFamilyImpl
+      ColumnFamilyHandleImpl handle_impl(cfd, impl.get(), &impl->mutex_);
+      s = impl->DropColumnFamilyImpl(&handle_impl);
+      if (!s.ok()) {
+        break;
+      } else {
+        // ROCKS_LOG_INFO(impl->immutable_db_options_.info_log, "Dropped
+        // transient CF: ")
+      }
+    }
+  }
 
   if (s.ok() && !impl->immutable_db_options_.write_identity_file) {
     // On successful recovery, delete an obsolete IDENTITY file to avoid DB ID

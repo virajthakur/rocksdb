@@ -284,35 +284,61 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
   }
   Status s;
   if (mempurge_s.ok()) {
+    fprintf(stderr, "DEBUG FlushJob::Run: Mempurge succeeded for CF '%s'\n",
+            cfd_->GetName().c_str());
     base_->Unref();
     s = Status::OK();
   } else {
+    fprintf(stderr,
+            "DEBUG FlushJob::Run: About to call WriteLevel0Table for CF '%s', "
+            "is_transient=%d\n",
+            cfd_->GetName().c_str(), cfd_->ioptions().is_transient);
     // This will release and re-acquire the mutex.
     s = WriteLevel0Table();
+    fprintf(stderr,
+            "DEBUG FlushJob::Run: WriteLevel0Table returned for CF '%s', "
+            "status=%s\n",
+            cfd_->GetName().c_str(), s.ToString().c_str());
   }
 
+  fprintf(stderr,
+          "DEBUG FlushJob::Run: After WriteLevel0Table, checking if dropped\n");
   if (s.ok() && cfd_->IsDropped()) {
     s = Status::ColumnFamilyDropped("Column family dropped during compaction");
   }
+  fprintf(stderr, "DEBUG FlushJob::Run: IsDropped=%d, checking shutdown\n",
+          cfd_->IsDropped());
   if ((s.ok() || s.IsColumnFamilyDropped()) &&
       shutting_down_->load(std::memory_order_acquire)) {
     s = Status::ShutdownInProgress("Database shutdown");
   }
 
+  fprintf(stderr,
+          "DEBUG FlushJob::Run: Before "
+          "MaybeIncreaseFullHistoryTsLowToAboveCutoffUDT\n");
   if (s.ok()) {
     s = MaybeIncreaseFullHistoryTsLowToAboveCutoffUDT();
   }
+  fprintf(stderr,
+          "DEBUG FlushJob::Run: After "
+          "MaybeIncreaseFullHistoryTsLowToAboveCutoffUDT, status=%s\n",
+          s.ToString().c_str());
 
   if (!s.ok()) {
+    fprintf(stderr, "DEBUG FlushJob::Run: Status not OK, rolling back\n");
     cfd_->imm()->RollbackMemtableFlush(
         mems_, /*rollback_succeeding_memtables=*/!db_options_.atomic_flush);
   } else if (write_manifest_) {
+    fprintf(stderr,
+            "DEBUG FlushJob::Run: write_manifest_=true, about to install "
+            "results\n");
     assert(!db_options_.atomic_flush);
     if (!db_options_.atomic_flush &&
         flush_reason_ != FlushReason::kErrorRecovery &&
         flush_reason_ != FlushReason::kErrorRecoveryRetryFlush &&
         error_handler && !error_handler->GetBGError().ok() &&
         error_handler->IsBGWorkStopped()) {
+      fprintf(stderr, "DEBUG FlushJob::Run: BG error detected, rolling back\n");
       cfd_->imm()->RollbackMemtableFlush(
           mems_, /*rollback_succeeding_memtables=*/!db_options_.atomic_flush);
       s = error_handler->GetBGError();
@@ -320,6 +346,10 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
         *skipped_since_bg_error = true;
       }
     } else {
+      fprintf(stderr,
+              "DEBUG FlushJob::Run: About to call "
+              "TryInstallMemtableFlushResults for CF '%s'\n",
+              cfd_->GetName().c_str());
       TEST_SYNC_POINT("FlushJob::InstallResults");
       // Replace immutable memtable with the generated Table
       s = cfd_->imm()->TryInstallMemtableFlushResults(
@@ -329,7 +359,14 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
               !(mempurge_s.ok()) /* write_edit : true if no mempurge happened (or if aborted),
                               but 'false' if mempurge successful: no new min log number
                               or new level 0 file path to write to manifest. */);
+      fprintf(stderr,
+              "DEBUG FlushJob::Run: TryInstallMemtableFlushResults returned, "
+              "status=%s\n",
+              s.ToString().c_str());
     }
+  } else {
+    fprintf(stderr,
+            "DEBUG FlushJob::Run: write_manifest_=false, skipping install\n");
   }
 
   if (s.ok() && file_meta != nullptr) {

@@ -6054,6 +6054,9 @@ Status VersionSet::ProcessManifestWrites(
   while (true) {
     ManifestWriter* ready = manifest_writers_.front();
     manifest_writers_.pop_front();
+    fprintf(stderr, "DEBUG ProcessManifestWrites: Waking up writer, cfd=%s, has_callback=%d\n",
+            ready->cfd ? ready->cfd->GetName().c_str() : "nullptr",
+            ready->manifest_write_callback ? 1 : 0);
     bool need_signal = true;
     for (const auto& w : writers) {
       if (&w == ready) {
@@ -6064,7 +6067,11 @@ Status VersionSet::ProcessManifestWrites(
     ready->status = s;
     ready->done = true;
     if (ready->manifest_write_callback) {
+      fprintf(stderr, "DEBUG ProcessManifestWrites: About to call callback for CF '%s'\n",
+              ready->cfd ? ready->cfd->GetName().c_str() : "nullptr");
       (ready->manifest_write_callback)(s);
+      fprintf(stderr, "DEBUG ProcessManifestWrites: Callback completed for CF '%s'\n",
+              ready->cfd ? ready->cfd->GetName().c_str() : "nullptr");
     }
     if (need_signal) {
       ready->cv.Signal();
@@ -6126,7 +6133,8 @@ Status VersionSet::LogAndApply(
     assert(static_cast<size_t>(num_cfds) == edit_lists.size());
   }
   for (int i = 0; i < num_cfds; ++i) {
-    // Skip transient CFs, but handle CF creation where column_family_data is nullptr
+    // Skip transient CFs, but handle CF creation where column_family_data is
+    // nullptr
     if (column_family_datas[i] != nullptr &&
         column_family_datas[i]->GetLatestMutableCFOptions().is_transient) {
       continue;

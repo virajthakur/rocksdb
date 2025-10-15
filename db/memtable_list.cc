@@ -563,6 +563,11 @@ Status MemTableList::TryInstallMemtableFlushResults(
     // be recorded in manifest in order. A concurrent flush thread, who is
     // assigned to flush the oldest memtable, will later wake up and does all
     // the pending writes to manifest, in order.
+    fprintf(stderr,
+            "DEBUG Loop: memlist.size()=%zu, empty=%d, flush_completed (if not "
+            "empty)=%d\n",
+            memlist.size(), memlist.empty(),
+            memlist.empty() ? -1 : memlist.back()->flush_completed_);
     if (memlist.empty() || !memlist.back()->flush_completed_) {
       break;
     }
@@ -575,9 +580,15 @@ Status MemTableList::TryInstallMemtableFlushResults(
     // enumerate from the last (earliest) element to see how many batch finished
     for (auto it = memlist.rbegin(); it != memlist.rend(); ++it) {
       ReadOnlyMemTable* m = *it;
+      fprintf(stderr,
+              "DEBUG: In loop, m->flush_completed_=%d, m->file_number_=%lu\n",
+              m->flush_completed_, m->file_number_);
       if (!m->flush_completed_) {
+        fprintf(stderr, "DEBUG: Breaking because flush_completed_ is false\n");
         break;
       }
+      fprintf(stderr, "DEBUG: batch_file_number=%lu, m->file_number_=%lu\n",
+              batch_file_number, m->file_number_);
       if (it == memlist.rbegin() || batch_file_number != m->file_number_) {
         // Oldest memtable in a new batch.
         batch_file_number = m->file_number_;
@@ -604,6 +615,8 @@ Status MemTableList::TryInstallMemtableFlushResults(
     }
 
     size_t num_mem_to_flush = memtables_to_flush.size();
+    fprintf(stderr, "DEBUG: num_mem_to_flush=%zu, edit_list.size()=%zu\n",
+            num_mem_to_flush, edit_list.size());
     // TODO(myabandeh): Not sure how batch_count could be 0 here.
     if (num_mem_to_flush > 0) {
       VersionEdit edit;
@@ -635,11 +648,21 @@ Status MemTableList::TryInstallMemtableFlushResults(
                                       to_delete, mu);
       };
       if (write_edits) {
+        fprintf(stderr,
+                "DEBUG TryInstall: About to LogAndApply for CF '%s', "
+                "is_transient=%d\n",
+                cfd->GetName().c_str(), cfd->ioptions().is_transient);
         // this can release and reacquire the mutex.
         s = vset->LogAndApply(cfd, read_options, write_options, edit_list, mu,
                               db_directory, /*new_descriptor_log=*/false,
                               /*column_family_options=*/nullptr,
                               manifest_write_cb);
+        fprintf(
+            stderr,
+            "DEBUG TryInstall: LogAndApply returned for CF '%s', status=%s\n",
+            cfd->GetName().c_str(), s.ToString().c_str());
+        // throw an exception
+
       } else {
         // If write_edit is false (e.g: successful mempurge),
         // then remove old memtables, wake up manifest write queue threads,
@@ -780,9 +803,28 @@ void MemTableList::RemoveMemTablesOrRestoreFlags(
   // on a dropped column family, and we must be able to
   // read full data as long as column family handle is not deleted, even if
   // the column family is dropped.
-  if (s.ok() && !cfd->IsDropped()) {  // commit new state
+  //
+  // EXCEPTION: Transient CFs should always have their memtables removed after
+  // flush, even though they may be marked as "dropped" internally. Transient
+  // CFs are designed to be temporary and their flush should proceed normally.
+  fprintf(stderr,
+          "DEBUG RemoveMemTables: CALLED! CF '%s', "
+          "s.ok()=%d, is_dropped=%d, is_transient=%d, num_mem_to_flush=%zu, "
+          "memlist.size()=%zu\n",
+          cfd->GetName().c_str(), s.ok(), cfd->IsDropped(),
+          cfd->ioptions().is_transient, num_mem_to_flush,
+          current_->memlist_.size());
+  if (s.ok() && (!cfd->IsDropped())) {  // commit new state
+    fprintf(stderr,
+            "DEBUG RemoveMemTables: WILL COMMIT - Removing %zu memtables for "
+            "CF '%s'\n",
+            num_mem_to_flush, cfd->GetName().c_str());
     while (num_mem_to_flush-- > 0) {
       ReadOnlyMemTable* m = current_->memlist_.back();
+      fprintf(
+          stderr,
+          "DEBUG RemoveMemTables: About to Remove memtable, current size=%zu\n",
+          current_->memlist_.size());
       // TODO: The logging can be redundant when we flush multiple memtables
       // into one SST file. We should only check the edit_ of the oldest
       // memtable in the group in that case.
